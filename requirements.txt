@@ -1,0 +1,46 @@
+# ==============================
+# LangChain ecosystem
+# ==============================
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langchain-text-splitters
+langchain-huggingface
+transformers 
+sentence-transformers
+
+# ==============================
+# LangGraph (workflow/agents)
+# ==============================
+langgraph
+
+# ==============================
+# Embeddings / LLM backend
+# ==============================
+openai
+
+# ==============================
+# Vector store dependency (FAISS)
+# ==============================
+faiss-cpu
+
+# ==============================
+# Data validation
+# ==============================
+pydantic
+
+# ==============================
+# Environment variables
+# ==============================
+python-dotenv
+
+# ==============================
+# PDF loading dependency
+# ==============================
+pypdf
+
+# ==============================
+# Web app dependency
+# ==============================
+streamlit
