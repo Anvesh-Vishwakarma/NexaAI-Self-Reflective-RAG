@@ -5,7 +5,7 @@ Nexa-Verify is an enterprise-grade, agentic RAG system designed to eliminate LLM
 # 🖼️ System Interface & Workflow
 ![image alt](https://github.com/Anvesh-Vishwakarma/NexaAI-Self-Reflective-RAG/blob/main/Screenshot%20(19).png?raw=true)
 
-![image](url)
+![image](https://github.com/Anvesh-Vishwakarma/NexaAI-Self-Reflective-RAG/blob/main/Screenshot%20(20).png?raw=true)
 
 ![image](url)
 
