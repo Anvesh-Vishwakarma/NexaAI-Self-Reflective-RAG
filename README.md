@@ -78,7 +78,7 @@ The system is built to ingest and understand complex organizational structures. 
 # ⚡ Quick Start
 1. Clone the repository:
 ```
-git clone https://github.com/Anvesh-Vishwakarma/Nexa-Verify.git
+git clone https://github.com/Anvesh-Vishwakarma/NexaAI-Self-Reflective-RAG.git
 ```
 2. Install dependencies:
 ```
