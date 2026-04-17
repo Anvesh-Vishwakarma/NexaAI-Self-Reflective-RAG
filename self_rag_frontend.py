@@ -54,7 +54,7 @@ if "messages" not in st.session_state:
 # Title
 # ----------------------------
 st.title("🤖 Self Fact-Check RAG Assistant")
-st.caption("Ask questions about company documents with verified answers")
+st.caption("Ask questions about NexaAI company documents with verified answers")
 
 # ----------------------------
 # Display Chat History
@@ -66,7 +66,7 @@ for msg in st.session_state.messages:
 # ----------------------------
 # User Input
 # ----------------------------
-if prompt := st.chat_input("Ask your question..."):
+if prompt := st.chat_input("Ask your question..., e.g. 'What are NexaAI's core values?'"):
 
     # Store user message
     st.session_state.messages.append({"role": "user", "content": prompt})
