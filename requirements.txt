@@ -9,6 +9,9 @@ langchain-text-splitters
 langchain-huggingface
 transformers 
 sentence-transformers
+torch
+torchvision
+sentence-transformers
 
 # ==============================
 # LangGraph (workflow/agents)
