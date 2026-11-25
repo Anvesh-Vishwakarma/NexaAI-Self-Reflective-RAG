@@ -5,6 +5,8 @@
 
 ---
 
+**Live Demo** - https://nexaai-self-reflective-rag-glmifbsngbbvfkpbd4ygjz.streamlit.app/
+
 ## ✨ Key Features
 
 ### 🧠 Self-Corrective LangGraph Pipeline (`self_rag_backend.py`)
