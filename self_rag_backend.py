@@ -1,5 +1,5 @@
-from typing import List, TypedDict, Literal
-from pydantic import BaseModel, Field
+from typing import Annotated, Any, List, Literal, TypedDict, cast
+from langchain_core.runnables import Runnable
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
@@ -73,16 +73,18 @@ class State(TypedDict):
     evidence: List[str]
     
     retries: int
+    retrieval_query: str
     
     isuse: Literal["useful", "not_useful"]
     use_reason: str
     
     
 class RetrieveDecision(TypedDict):
-    should_retrieve: bool = Field(
+    should_retrieve: Annotated[
+        bool,
         ...,
-        description="True if external documents are needed to answer reliably, else False."
-    )
+        "True if external documents are needed to answer reliably, else False.",
+    ]
 
 decide_retrieval_prompt = ChatPromptTemplate.from_messages(
     [
@@ -100,7 +102,10 @@ decide_retrieval_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-retrieve_llm_chain = decide_retrieval_prompt | model.with_structured_output(RetrieveDecision)
+retrieve_llm_chain = cast(
+    Runnable[dict[str, Any], RetrieveDecision],
+    decide_retrieval_prompt | model.with_structured_output(cast(Any, RetrieveDecision)),
+)
 
 def decide_retrieval(state: State):
     question = state["question"]
@@ -132,14 +137,17 @@ def generate_direct(state: State):
     return {"answer": answer}
 
 def retrieve(state: State):
+    if retriever is None:
+        raise RuntimeError("Retriever has not been initialized.")
     return {"docs": retriever.invoke(state["question"])}
 
 
 class RelevanceDecision(TypedDict):
-    is_relevant: bool = Field(
+    is_relevant: Annotated[
+        bool,
         ...,
-        description="True if the document helps answer the question, else False."
-    )
+        "True if the document helps answer the question, else False.",
+    ]
 
 is_relevant_prompt = ChatPromptTemplate.from_messages(
     [
@@ -157,7 +165,10 @@ is_relevant_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-relevance_llm_chain = is_relevant_prompt | model.with_structured_output(RelevanceDecision)
+relevance_llm_chain = cast(
+    Runnable[dict[str, Any], RelevanceDecision],
+    is_relevant_prompt | model.with_structured_output(cast(Any, RelevanceDecision)),
+)
 
 def is_relevant(state: State):
     
@@ -245,7 +256,10 @@ issup_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-issup_llm_chain = issup_prompt | model.with_structured_output(IsSUPDecision)
+issup_llm_chain = cast(
+    Runnable[dict[str, Any], IsSUPDecision],
+    issup_prompt | model.with_structured_output(cast(Any, IsSUPDecision)),
+)
 
 def is_sup(state: State):
     
@@ -312,7 +326,7 @@ def revise_answer(state: State):
 
 class IsUSEDecision(TypedDict):
     isuse: Literal["useful", "not_useful"]
-    reason: str = Field(..., description="Short reason in 1 line.")
+    reason: Annotated[str, ..., "Short reason in 1 line."]
 
 isuse_prompt = ChatPromptTemplate.from_messages(
     [
@@ -337,7 +351,10 @@ isuse_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-isuse_llm_chain = isuse_prompt | model.with_structured_output(IsUSEDecision)
+isuse_llm_chain = cast(
+    Runnable[dict[str, Any], IsUSEDecision],
+    isuse_prompt | model.with_structured_output(cast(Any, IsUSEDecision)),
+)
 
 def is_use(state: State):
     
@@ -361,10 +378,11 @@ def route_after_isuse(state: State) -> Literal["END", "rewrite_question" ,"no_re
 
 
 class RewriteDecision(TypedDict):
-    retrieval_query: str = Field(
+    retrieval_query: Annotated[
+        str,
         ...,
-        description="Rewritten query optimized for vector retrieval against internal company PDFs."
-    )
+        "Rewritten query optimized for vector retrieval against internal company PDFs.",
+    ]
 
 rewrite_for_retrieval_prompt = ChatPromptTemplate.from_messages(
     [
@@ -393,7 +411,10 @@ rewrite_for_retrieval_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-rewrite_llm_chain = rewrite_for_retrieval_prompt | model.with_structured_output(RewriteDecision)
+rewrite_llm_chain = cast(
+    Runnable[dict[str, Any], RewriteDecision],
+    rewrite_for_retrieval_prompt | model.with_structured_output(cast(Any, RewriteDecision)),
+)
 
 def rewrite_question(state: State):
     
@@ -429,7 +450,7 @@ g.add_node("is_relevant", is_relevant)
 g.add_node("generate_from_context", generate_from_context)
 g.add_node("no_relevant_docs", no_relevant_docs)
 
-g. add_node("is_sup", is_sup)
+g.add_node("is_sup", is_sup)
 
 #g.add_node("accept_answer", accept_answer)
 g.add_node("revise_answer", revise_answer)
