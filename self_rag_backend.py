@@ -1,4 +1,4 @@
-from typing import Annotated, Any, List, Literal, TypedDict, cast
+from typing import Annotated, Any, List, Literal, Sequence, TypedDict, cast
 from langchain_core.runnables import Runnable
 
 from langchain_community.document_loaders import PyPDFLoader
@@ -11,22 +11,70 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from langgraph.graph import StateGraph, START, END
 from dotenv import load_dotenv
-import os 
+import os
+import tempfile
 
 load_dotenv()
 
-DEFAULT_PDFS = ["Company_Policies.pdf", "Company_Profile.pdf", "Product_and_Pricing.pdf"]
+# DEFAULT_PDFS = ["Company_Policies.pdf", "Company_Profile.pdf", "Product_and_Pricing.pdf"]
 
-def load_documents(pdf_paths: List[str]) -> List[Document]:
-    loaded = []
-    for p in pdf_paths:
-        if os.path.exists(p):
+
+def _load_single_pdf(pdf_path: str) -> List[Document]:
+    """Load a single PDF file from disk into LangChain Documents."""
+    try:
+        return PyPDFLoader(pdf_path).load()
+    except Exception as e:
+        print(f"Error loading {pdf_path}: {e}")
+        return []
+
+
+def load_documents(
+    pdf_sources: str | os.PathLike[str] | Sequence[str | os.PathLike[str] | Any] | Any,
+) -> List[Document]:
+    """Load user-provided PDF paths, directories, or file-like objects into Documents."""
+    if not pdf_sources:
+        return []
+
+    if isinstance(pdf_sources, (str, os.PathLike)) or hasattr(pdf_sources, "read"):
+        sources: List[Any] = [pdf_sources]
+    else:
+        sources = list(pdf_sources)
+
+    loaded: List[Document] = []
+    for source in sources:
+        if isinstance(source, (str, os.PathLike)):
+            path_str = os.fspath(source)
+            if os.path.isdir(path_str):
+                for name in sorted(os.listdir(path_str)):
+                    if name.lower().endswith(".pdf"):
+                        loaded.extend(_load_single_pdf(os.path.join(path_str, name)))
+            elif os.path.exists(path_str):
+                loaded.extend(_load_single_pdf(path_str))
+            else:
+                print(f"File not found: {path_str}")
+        elif hasattr(source, "read"):
+            tmp_path: str | None = None
             try:
-                loaded.extend(PyPDFLoader(p).load())
+                if hasattr(source, "seek"):
+                    source.seek(0)
+                data = source.read()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    tmp_file.write(data)
+                    tmp_path = tmp_file.name
+                docs = _load_single_pdf(tmp_path)
+                source_name = getattr(source, "name", None)
+                if source_name:
+                    for doc in docs:
+                        doc.metadata["source"] = source_name
+                loaded.extend(docs)
             except Exception as e:
-                print(f"Error loading {p}: {e}")
+                print(f"Error loading uploaded PDF: {e}")
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
         else:
-            print(f"File not found: {p}")
+            print(f"Unsupported PDF source: {source!r}")
+
     return loaded
 
 # Initialize global embeddings and splitter
@@ -37,19 +85,41 @@ splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=150)
 vector_store = None
 retriever = None
 
-def build_vector_store(pdf_paths: List[str]):
+
+def build_vector_store(
+    documents_or_sources: Sequence[Document] | str | os.PathLike[str] | Sequence[Any] | Any = None,
+) -> FAISS:
+    """Chunk loaded Documents (or load user-provided PDFs first) and build the FAISS vector store."""
     global vector_store, retriever
-    loaded_docs = load_documents(pdf_paths)
+
+    if documents_or_sources is None:
+        loaded_docs: List[Document] = []
+    elif isinstance(documents_or_sources, Document):
+        loaded_docs = [documents_or_sources]
+    elif isinstance(documents_or_sources, (list, tuple)) and all(
+        isinstance(item, Document) for item in documents_or_sources
+    ):
+        loaded_docs = list(documents_or_sources)
+    else:
+        loaded_docs = load_documents(documents_or_sources)
+
     if not loaded_docs:
         # Fallback to avoid error when no docs are found/uploaded
-        loaded_docs = [Document(page_content="No documents uploaded yet. Please upload PDF files.", metadata={"source": "placeholder"})]
-    
+        loaded_docs = [
+            Document(
+                page_content="No documents uploaded yet. Please upload PDF files.",
+                metadata={"source": "placeholder"},
+            )
+        ]
+
     chunks = splitter.split_documents(loaded_docs)
     vector_store = FAISS.from_documents(chunks, embeddings)
     retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+    return vector_store
+
 
 # Build retriever initially using default files
-build_vector_store(DEFAULT_PDFS)
+# build_vector_store(DEFAULT_PDFS)
 
 llm = HuggingFaceEndpoint(repo_id = "Qwen/Qwen2.5-72B-Instruct",huggingfacehub_api_token = os.getenv("HuggingFace_API_KEY"))
 model = ChatHuggingFace(llm=llm)
@@ -138,7 +208,7 @@ def generate_direct(state: State):
 
 def retrieve(state: State):
     if retriever is None:
-        raise RuntimeError("Retriever has not been initialized.")
+        return {"docs": []}
     return {"docs": retriever.invoke(state["question"])}
 
 
