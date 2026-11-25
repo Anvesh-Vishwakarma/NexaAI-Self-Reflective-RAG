@@ -7,9 +7,14 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 
+from langchain_groq import ChatGroq
+
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
 from dotenv import load_dotenv
 import os
 import tempfile
@@ -121,14 +126,16 @@ def build_vector_store(
 # Build retriever initially using default files
 # build_vector_store(DEFAULT_PDFS)
 
-llm = HuggingFaceEndpoint(repo_id = "Qwen/Qwen2.5-72B-Instruct",huggingfacehub_api_token = os.getenv("HuggingFace_API_KEY"))
-model = ChatHuggingFace(llm=llm)
+#llm = HuggingFaceEndpoint(repo_id = "meta-llama/Meta-Llama-3-8B-Instruct",huggingfacehub_api_token = os.getenv("HuggingFace_API_KEY"))
+#model = ChatHuggingFace(llm=llm)
 
+model = ChatGroq(model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"))
 
 # --------------------------------------------------
 # Graph State
 # --------------------------------------------------
 class State(TypedDict):
+    messages: Annotated[List[AnyMessage], add_messages]
     question: str
     need_retrieval: bool
 
@@ -147,6 +154,18 @@ class State(TypedDict):
     
     isuse: Literal["useful", "not_useful"]
     use_reason: str
+
+
+def _format_chat_history(messages: Sequence[AnyMessage], max_messages: int = 12) -> str:
+    """Format recent checkpointed conversation turns for prompt context."""
+    if not messages:
+        return "No previous conversation."
+    lines: List[str] = []
+    for msg in messages[-max_messages:]:
+        role = "User" if isinstance(msg, HumanMessage) else "Assistant"
+        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
     
     
 class RetrieveDecision(TypedDict):
@@ -164,11 +183,14 @@ decide_retrieval_prompt = ChatPromptTemplate.from_messages(
             "Return JSON that matches this schema:\n"
             "{{'should_retrieve': boolean}}\n\n"
             "Guidelines:\n"
-            "- should_retrieve=True if answering requires specific facts, citations, or info likely not in the model.\n"
-            "- should_retrieve=False for general explanations, definitions, or reasoning that doesn't need sources.\n"
+            "- should_retrieve=True if answering requires specific facts, citations, or info likely not in the model (including follow-ups about uploaded documents).\n"
+            "- should_retrieve=False for general explanations, definitions, reasoning, or questions solely about prior conversation turns that don't need new document lookups.\n"
             "- If unsure, choose True."
         ),
-        ("human", "Question: {question}"),
+        (
+            "human",
+            "Conversation History:\n{chat_history}\n\nQuestion: {question}",
+        ),
     ]
 )
 
@@ -179,37 +201,57 @@ retrieve_llm_chain = cast(
 
 def decide_retrieval(state: State):
     question = state["question"]
-    
-    decision = retrieve_llm_chain.invoke({"question": question})
-    
-    return {"need_retrieval": decision["should_retrieve"]}
+    chat_history = _format_chat_history(state.get("messages", []))
+
+    decision = retrieve_llm_chain.invoke({"question": question, "chat_history": chat_history})
+
+    return {
+        "need_retrieval": decision["should_retrieve"],
+        "docs": [],
+        "relevant_docs": [],
+        "context": "",
+        "answer": "",
+        "evidence": [],
+        "retries": 0,
+        "retrieval_query": question,
+    }
 
 
 direct_generation_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Answer the question using only your general knowledge.\n"
+            "Answer the question using only your general knowledge and the conversation history.\n"
             "Do NOT assume access to external documents.\n"
             "If you are unsure or the answer requires specific sources, say:\n"
             "'I don't know based on my general knowledge.'"
         ),
-        ("human", "{question}"),
+        (
+            "human",
+            "Conversation History:\n{chat_history}\n\nQuestion:\n{question}",
+        ),
     ]
 )
 
 def generate_direct(state: State):
-    
     question = state["question"]
-    
-    answer = model.invoke(direct_generation_prompt.format(question=question))
-    
-    return {"answer": answer}
+    chat_history = _format_chat_history(state.get("messages", []))
+
+    response = model.invoke(
+        direct_generation_prompt.format_messages(question=question, chat_history=chat_history)
+    )
+    answer_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    return {
+        "answer": answer_text,
+        "messages": [HumanMessage(content=question), AIMessage(content=answer_text)],
+    }
 
 def retrieve(state: State):
     if retriever is None:
         return {"docs": []}
-    return {"docs": retriever.invoke(state["question"])}
+    query = state.get("retrieval_query") or state["question"]
+    return {"docs": retriever.invoke(query)}
 
 
 class RelevanceDecision(TypedDict):
@@ -260,12 +302,14 @@ rag_generation_prompt = ChatPromptTemplate.from_messages(
             "system",
             "You are a business RAG assistant.\n"
             "Answer the user's question using ONLY the provided context.\n"
+            "You may use the conversation history solely to understand follow-up references.\n"
             "If the context does not contain enough information, say:\n"
             "'No relevant document found.'\n"
             "Do not use outside knowledge.\n"
         ),
         (
             "human",
+            "Conversation History:\n{chat_history}\n\n"
             "Question:\n{question}\n\n"
             "Context:\n{context}\n"
         ),
@@ -280,7 +324,14 @@ def generate_from_context(state: State):
     if not context:
         return {"answer": "No relevant document found."}
     
-    out = model.invoke(rag_generation_prompt.format_messages(question=state["question"], context=context))
+    chat_history = _format_chat_history(state.get("messages", []))
+    out = model.invoke(
+        rag_generation_prompt.format_messages(
+            question=state["question"],
+            context=context,
+            chat_history=chat_history,
+        )
+    )
     
     return {"answer": out.content, "context": context}
 
@@ -433,16 +484,22 @@ def is_use(state: State):
     
     decision = isuse_llm_chain.invoke({"question": question, "answer": answer})
     
+    if decision["isuse"] == "useful":
+        return {
+            "isuse": decision["isuse"],
+            "use_reason": decision["reason"],
+            "messages": [HumanMessage(content=question), AIMessage(content=answer)],
+        }
     return {"isuse": decision["isuse"], "use_reason": decision["reason"]}
 
 MAX_REWRITE_TRIES = 3
 
-def route_after_isuse(state: State) -> Literal["END", "rewrite_question" ,"no_relevan_docs"]:
+def route_after_isuse(state: State) -> Literal["END", "rewrite_question", "no_relevant_docs"]:
     if state.get("isuse") == "useful":
         return "END"
     
     if state.get("retries", 0) >= MAX_REWRITE_TRIES:
-        return "no_relevan_docs"
+        return "no_relevant_docs"
     
     return "rewrite_question"
 
@@ -474,6 +531,7 @@ rewrite_for_retrieval_prompt = ChatPromptTemplate.from_messages(
         ),
         (
             "human",
+            "Conversation History:\n{chat_history}\n\n"
             "QUESTION:\n{question}\n\n"
             "Previous retrieval query:\n{retrieval_query}\n\n"
             "Answer (if any):\n{answer}"
@@ -491,13 +549,26 @@ def rewrite_question(state: State):
     question = state["question"]
     answer = state.get("answer", "")
     retrieval_query = state.get("retrieval_query", question)  # start with original question for first rewrite
+    chat_history = _format_chat_history(state.get("messages", []))
     
-    decision = rewrite_llm_chain.invoke({"question": question, "answer": answer, "retrieval_query": retrieval_query})
+    decision = rewrite_llm_chain.invoke(
+        {
+            "question": question,
+            "answer": answer,
+            "retrieval_query": retrieval_query,
+            "chat_history": chat_history,
+        }
+    )
     
     return {"retrieval_query": decision["retrieval_query"], "retries": state.get("retries", 0) + 1}
 
 def no_relevant_docs(state: State):
-    return {"answer": "No relevant document found.", "context": ""}
+    msg = "No relevant document found."
+    return {
+        "answer": msg,
+        "context": "",
+        "messages": [HumanMessage(content=state["question"]), AIMessage(content=msg)],
+    }
 
 def route_after_decide(state: State) -> Literal["generate_direct", "retrieve"]:
     if state["need_retrieval"]:
@@ -558,6 +629,8 @@ g.add_conditional_edges(
 
 g.add_edge("rewrite_question", "retrieve")  # after rewriting, go back to retrieval with new query
 
-app = g.compile()
+checkpointer = InMemorySaver()
+
+app = g.compile(checkpointer=checkpointer)
 
 app
